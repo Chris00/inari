@@ -9,6 +9,12 @@
 
 It [conforms](https://docs.rs/inari/latest/inari/_docs/conformance/index.html) to [IEEE Std 1788.1-2017](https://doi.org/10.1109/IEEESTD.2018.8277144). It also implements a subset of [IEEE Std 1788-2015](https://doi.org/10.1109/IEEESTD.2015.7140721).
 
+This version **inari-crlibm** replaces the MPFR calls for
+transcendental functions (except `atan2`, `exp2` and `exp10`) with
+calls to [crlibm](https://crates.io/crates/crlibm) which provides the
+same safety guarantees but is vastly faster.
+
+
 ## Supported Platforms
 
 The following CPUs are supported and continuously tested:

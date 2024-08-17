@@ -1,6 +1,9 @@
-use crate::{classify::*, const_interval, interval::*};
+use crate::{classify::*, const_interval, interval::*, simd::*};
+use crlibm::*;
 use gmp_mpfr_sys::mpfr;
 use rug::Float;
+
+const ONE: Interval = const_interval!(1.0, 1.0);
 
 macro_rules! mpfr_fn {
     ($mpfr_f:ident, $f_rd:ident, $f_ru:ident) => {
@@ -66,27 +69,11 @@ macro_rules! mpfr_fn_si {
     }};
 }
 
-mpfr_fn!(acos, acos_rd, acos_ru);
-mpfr_fn!(acosh, acosh_rd, acosh_ru);
-mpfr_fn!(asin, asin_rd, asin_ru);
-mpfr_fn!(asinh, asinh_rd, asinh_ru);
-mpfr_fn!(atan, atan_rd, atan_ru);
 mpfr_fn2!(atan2, atan2_rd, atan2_ru);
-mpfr_fn!(atanh, atanh_rd, atanh_ru);
-mpfr_fn!(cos, cos_rd, cos_ru);
-mpfr_fn!(cosh, cosh_rd, cosh_ru);
-mpfr_fn!(exp, exp_rd, exp_ru);
 mpfr_fn!(exp10, exp10_rd, exp10_ru);
 mpfr_fn!(exp2, exp2_rd, exp2_ru);
-mpfr_fn!(log, ln_rd, ln_ru);
-mpfr_fn!(log10, log10_rd, log10_ru);
-mpfr_fn!(log2, log2_rd, log2_ru);
 mpfr_fn2!(pow, pow_rd, pow_ru);
 mpfr_fn_si!(pow_si, pown_rd, pown_ru);
-mpfr_fn!(sin, sin_rd, sin_ru);
-mpfr_fn!(sinh, sinh_rd, sinh_ru);
-mpfr_fn!(tan, tan_rd, tan_ru);
-mpfr_fn!(tanh, tanh_rd, tanh_ru);
 
 fn rem_euclid_2(x: f64) -> f64 {
     if 2.0 * (x / 2.0).floor() == x {
@@ -141,6 +128,24 @@ macro_rules! impl_mono_inc {
     };
 }
 
+/// Return the value of `x` by an odd increasing function assuming
+/// that 0 is in the interior of `x` and `f` implements the function
+/// when the two bounds of the interval are positive.
+#[inline]
+fn odd_inc_fn_sign_change(x: Interval, f: fn(Interval) -> Interval) -> Interval {
+  if -x.inf_raw() <= x.sup_raw() {
+      let x = neg0(x.rep); // [a; b]
+      let x = Interval { rep: x }; // [-a, b] ≥ 0
+      let y = f(x);
+      Interval { rep: neg0(y.rep) }
+  } else {
+      let x = neg0(swap(x.rep)); // [-b; -a]
+      let x = Interval { rep: x }; // [b, -a] ≥ 0
+      let y = f(x);
+      Interval { rep: neg0(swap(y.rep)) }
+  }
+}
+
 impl Interval {
     /// Returns the inverse cosine of `self`.
     ///
@@ -180,7 +185,9 @@ impl Interval {
     /// | $\[1, ∞)$ | $\[0, ∞)$ |
     #[must_use]
     pub fn acosh(self) -> Self {
-        self.acosh_impl().0
+        const DOM: Interval = const_interval!(1.0, f64::INFINITY);
+        let x = self.intersection(DOM);
+        (x + (x.sqr() - ONE).sqrt()).ln() // FIXME: use .sqr_pos()
     }
 
     fn acosh_impl(self) -> (Self, Decoration) {
@@ -191,7 +198,7 @@ impl Interval {
             return (x, Decoration::Trv);
         }
 
-        let y = Self::with_infsup_raw(acosh_rd(x.inf_raw()), acosh_ru(x.sup_raw()));
+        let y = Self::acosh(x);
         let d = if self.subset(DOM) {
             Decoration::Com
         } else {
@@ -229,18 +236,25 @@ impl Interval {
         (y, d)
     }
 
-    impl_mono_inc!(
-        /// Returns the inverse hyperbolic sine of `self`.
-        ///
-        /// The domain and the range of the point function are:
-        ///
-        /// | Domain | Range |
-        /// | ------ | ----- |
-        /// | $\R$   | $\R$  |
-        asinh,
-        asinh_rd,
-        asinh_ru
-    );
+    /// Returns the inverse hyperbolic sine of `self`.
+    ///
+    /// The domain and the range of the point function are:
+    ///
+    /// | Domain | Range |
+    /// | ------ | ----- |
+    /// | $\R$   | $\R$  |
+    #[must_use]
+    pub fn asinh(self) -> Self {
+        use IntervalClass::*;
+        match self.classify() {
+            E | Z => self,
+            P0 | P1 => (self + (self.sqr() + ONE).sqrt()).ln(),
+            N0 | N1 => -((self.sqr() + ONE).sqrt() - self).ln(),
+            M => odd_inc_fn_sign_change(self,
+                |x| (x + (x.sqr() + ONE).sqrt()).ln()),
+        }
+    }
+
     impl_mono_inc!(
         /// Returns the inverse tangent of `self`.
         ///
@@ -404,7 +418,7 @@ impl Interval {
             return (Self::EMPTY, Decoration::Trv);
         }
 
-        let y = Self::with_infsup_raw(atanh_rd(a), atanh_ru(b));
+        let y = const_interval!(0.5, 0.5) * ((ONE + x) / (ONE - x)).ln();
         let d = if self.interior(DOM) {
             Decoration::Com
         } else {
@@ -497,6 +511,19 @@ impl Interval {
         exp,
         exp_rd,
         exp_ru
+    );
+    impl_mono_inc!(
+        /// Returns `self` raised to the power of $\e$ minus one with
+        /// better accuracy than `self.exp() - const_interval!(1.0, 1.0)`.
+        ///
+        /// The domain and the range of the point function are:
+        ///
+        /// | Domain | Range    |
+        /// | ------ | -------- |
+        /// | $\R$   | $(0, ∞)$ |
+        exp_m1,
+        exp_m1_rd,
+        exp_m1_ru
     );
     impl_mono_inc!(
         /// Returns `self` raised to the power of 10.
@@ -816,18 +843,34 @@ impl Interval {
         }
     }
 
-    impl_mono_inc!(
-        /// Returns the hyperbolic tangent of `self`.
-        ///
-        /// The domain and the range of the point function are:
-        ///
-        /// | Domain | Range     |
-        /// | ------ | --------- |
-        /// | $\R$   | $(-1, 1)$ |
-        tanh,
-        tanh_rd,
-        tanh_ru
-    );
+    /// Returns the hyperbolic tangent of `self`.
+    ///
+    /// The domain and the range of the point function are:
+    ///
+    /// | Domain | Range     |
+    /// | ------ | --------- |
+    /// | $\R$   | $(-1, 1)$ |
+    #[must_use]
+    pub fn tanh(self) -> Self {
+        const TWO: Interval = const_interval!(2.0, 2.0);
+        const MTWO: Interval = const_interval!(-2.0, -2.0);
+        use IntervalClass::*;
+        match self.classify() {
+            E | Z => self,
+            P0 | P1 => {
+                let z = (MTWO * self).exp_m1();
+                -z / (z + TWO)
+            }
+            N0 | N1 => {
+                let z = (TWO * self).exp_m1();
+                z / (z + TWO)
+            }
+            M => odd_inc_fn_sign_change(self, |x| {
+                let z = (MTWO * x).exp_m1();
+                -z / (z + TWO)
+            }),
+        }
+    }
 }
 
 macro_rules! impl_dec {
