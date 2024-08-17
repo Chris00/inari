@@ -43,7 +43,13 @@ pub type Result<T> = result::Result<T, IntervalError>;
 /// An interval with [`f64`] bounds.
 ///
 /// It is sometimes referred to as a *bare* interval in contrast to a decorated interval ([`DecInterval`]).
-#[derive(Clone, Copy, Debug)]
+///
+/// Note that, for convenience, the [`Debug`][std::fmt::Debug] output
+/// for nonempty intervals will look like `Interval { inf: a, sup: b }`,
+/// where `a` and `b` are the `f64` bounds of the interval,
+/// although, internally, intervals are not defined as a struct.
+/// Empty intervals will be printed as `Interval::EMPTY`.
+#[derive(Clone, Copy)]
 #[repr(C)]
 pub struct Interval {
     // An interval is stored in a SIMD vector in the neginf-sup-nan form:
@@ -55,15 +61,26 @@ pub struct Interval {
     //
     // Representations of zeros and NaNs are arbitrary; a zero can be either +0.0 or -0.0,
     // and a NaN can be either a qNaN or a sNaN with an arbitrary payload.
-    //
-    // In Debug formatting, the value of `rep` is printed as either
-    // `__m128d(-a, b)` (on x86-64) or `float64x2_t(-a, b)` (on AArch64).
     pub(crate) rep: F64X2,
 }
 
 unsafe impl Send for Interval {}
 unsafe impl Sync for Interval {}
 impl Unpin for Interval {}
+
+impl fmt::Debug for Interval {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        if self.is_empty() {
+            write!(f, "Interval::EMPTY")
+        } else {
+            let [a, b] = extract(self.rep);
+            f.debug_struct("Interval")
+                .field("inf", &-a)
+                .field("sup", &b)
+                .finish()
+        }
+    }
+}
 
 impl Interval {
     pub(crate) fn inf_raw(self) -> f64 {
